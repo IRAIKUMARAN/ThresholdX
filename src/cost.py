@@ -279,3 +279,91 @@ def find_best_threshold(true_labels, churn_probabilities):
             best_threshold = threshold
 
     return float(best_threshold), float(best_cost)
+
+
+# ---------------------------------------------------------------------------
+# Segment-specific thresholds
+# ---------------------------------------------------------------------------
+# A single global threshold is a compromise across every customer. But some
+# customer groups (e.g. contract type) have very different baseline churn
+# risk, so the cost-minimising cutoff for one group need not be the best
+# cutoff for another. This gives each group its own cutoff instead of forcing
+# one number to work for everybody.
+#
+# A model like plain Logistic Regression has ONE global decision boundary and
+# cannot express this without adding interaction features by hand. A
+# segment-specific threshold gets it "for free" on top of whatever ensemble
+# or model already produces the probabilities - which is why it's worth
+# testing as a way to beat a single global-threshold classifier.
+
+def find_best_threshold_by_segment(true_labels, churn_probabilities, segment_labels):
+    """
+    Tune a SEPARATE threshold for each distinct value of segment_labels
+    (e.g. one threshold for "Month-to-month", one for "One year", one for
+    "Two year"), instead of a single threshold for everyone.
+
+    IMPORTANT - this must only ever be called on TRAINING data, exactly like
+    find_best_threshold. Each segment's threshold is chosen using only that
+    segment's training customers.
+
+    Returns a dict: {segment_value: threshold}.
+    """
+    true_labels          = np.asarray(true_labels)
+    churn_probabilities  = np.asarray(churn_probabilities)
+    segment_labels       = np.asarray(segment_labels)
+
+    thresholds_by_segment = {}
+    for segment_value in np.unique(segment_labels):
+        in_segment = (segment_labels == segment_value)
+        threshold, _ = find_best_threshold(
+            true_labels[in_segment], churn_probabilities[in_segment]
+        )
+        thresholds_by_segment[segment_value] = threshold
+
+    return thresholds_by_segment
+
+
+def apply_segment_thresholds(churn_probabilities, segment_labels,
+                             thresholds_by_segment, fallback_threshold):
+    """
+    Turn probabilities into yes/no predictions using a different cutoff per
+    segment. A segment value seen at prediction time that never appeared in
+    training (should not happen with a fixed category like Contract, but
+    guarded anyway) falls back to fallback_threshold.
+    """
+    churn_probabilities = np.asarray(churn_probabilities)
+    segment_labels       = np.asarray(segment_labels)
+
+    predictions = np.zeros(len(segment_labels), dtype=int)
+    for segment_value in np.unique(segment_labels):
+        in_segment = (segment_labels == segment_value)
+        threshold = thresholds_by_segment.get(segment_value, fallback_threshold)
+        predictions[in_segment] = probabilities_to_predictions(
+            churn_probabilities[in_segment], threshold
+        )
+    return predictions
+
+
+def evaluate_predictions(system_name, true_labels, churn_probabilities,
+                         predictions, threshold_label="segment-specific"):
+    """
+    Same as evaluate(), but for systems where the decision was already made
+    with a PER-CUSTOMER threshold (so there is no single number to report in
+    the Threshold column - threshold_label is shown instead).
+    """
+    counts = count_confusion(true_labels, predictions)
+    precision, recall, f1 = precision_recall_f1(true_labels, predictions)
+
+    return {
+        "System":     system_name,
+        "Threshold":  threshold_label,
+        "Precision":  precision,
+        "Recall":     recall,
+        "F1":         f1,
+        "AUC-ROC":    area_under_roc(true_labels, churn_probabilities),
+        "TP":         counts["true_positives"],
+        "FP":         counts["false_positives"],
+        "FN":         counts["false_negatives"],
+        "TN":         counts["true_negatives"],
+        "Cost":       business_cost(true_labels, predictions),
+    }

@@ -274,6 +274,21 @@ def repeat_across_splits(split_count):
             test_probabilities @ averaged["best_blend"].weights,
             averaged["best_blend"].threshold)
 
+        # A separate threshold per contract type on top of the SA 5-D
+        # ensemble, instead of the one global threshold used for "SA 5-D".
+        ensemble_train_5d = oof @ weights
+        ensemble_test_5d  = test_probabilities @ weights
+        segment_train = data["raw_train"][config.SEGMENT_COLUMN].values
+        segment_test  = data["raw_test"][config.SEGMENT_COLUMN].values
+
+        segment_thresholds = cost_module.find_best_threshold_by_segment(
+            data["y_train"], ensemble_train_5d, segment_train)
+        segment_predictions = cost_module.apply_segment_thresholds(
+            ensemble_test_5d, segment_test, segment_thresholds,
+            search["best_blend"].threshold)
+        row["SA 5-D segmented"] = cost_module.business_cost(
+            data["y_test"], segment_predictions)
+
         all_rows.append(row)
         winner = min((k for k in row if k != "split"), key=lambda k: row[k])
         print(f"  split {split_number}/{split_count} (seed {seed:>4}) "
@@ -330,6 +345,44 @@ def repeat_across_splits(split_count):
         print(f"  the variation between splits. The honest statement is that")
         print(f"  the two are indistinguishable here - not that one beats the")
         print(f"  other. More splits would be needed to separate them.")
+
+    # ---- The specific question this experiment was added to answer -------
+    if "SA 5-D segmented" in table.columns and "Logistic Regression" in table.columns:
+        print()
+        print("-" * 74)
+        print(f"  Does a per-{config.SEGMENT_COLUMN} threshold let the ensemble")
+        print("  beat Logistic Regression specifically?")
+        print("-" * 74)
+
+        segment_comparison = cost_module.paired_comparison(
+            table["SA 5-D segmented"].values, table["Logistic Regression"].values)
+
+        print(f"  Difference on each split (segmented minus Logistic Regression):")
+        print("    " + ", ".join(f"{d:+.0f}" for d in segment_comparison["differences"]))
+        print()
+        print(f"  Mean difference     : {segment_comparison['mean_difference']:+.1f}")
+        print(f"  95% confidence range: "
+              f"{segment_comparison['confidence_interval'][0]:+.1f} to "
+              f"{segment_comparison['confidence_interval'][1]:+.1f}")
+        print()
+
+        mean_vs_global = (table["SA 5-D segmented"] - table["SA 5-D"]).mean()
+        print(f"  For reference, segmented vs the ensemble's own global "
+              f"threshold: {mean_vs_global:+.1f} on average "
+              f"({'segmented helps' if mean_vs_global < 0 else 'segmented does not help'}).")
+        print()
+
+        if segment_comparison["significant"] and segment_comparison["mean_difference"] < 0:
+            print("  The interval excludes zero and favours the segmented ensemble:")
+            print("  this is genuine evidence it beats Logistic Regression.")
+        elif segment_comparison["significant"]:
+            print("  The interval excludes zero, but in Logistic Regression's favour.")
+            print("  Segment thresholds do not close the gap on this evidence.")
+        else:
+            print("  The interval INCLUDES ZERO - not enough evidence yet to call")
+            print("  this a real win over Logistic Regression, even if the mean")
+            print("  looks better on this batch of splits. More splits, or a more")
+            print("  informative segment column, would be needed to settle it.")
 
     return table, comparison
 

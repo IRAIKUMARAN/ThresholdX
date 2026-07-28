@@ -115,6 +115,28 @@ def run(quick=False, run_seed_check=False):
         ensemble_test_5d, bayes_test_probabilities, blend_5d.threshold
     )
 
+    # ---------------------------------------------------------- 4b (new)
+    stage("4b", f"Trying a separate threshold per {config.SEGMENT_COLUMN} "
+                f"(instead of one global cutoff)")
+    ensemble_train_5d = blend_5d.predict_probabilities(oof_probabilities)
+
+    segment_train = data["raw_train"][config.SEGMENT_COLUMN].values
+    segment_test  = data["raw_test"][config.SEGMENT_COLUMN].values
+
+    segment_thresholds = cost_module.find_best_threshold_by_segment(
+        data["y_train"], ensemble_train_5d, segment_train
+    )
+    print(f"\n  Thresholds found per {config.SEGMENT_COLUMN} "
+          f"(global 5-D threshold was {blend_5d.threshold:.3f}):")
+    for segment_value, threshold in segment_thresholds.items():
+        count_in_segment = int((segment_train == segment_value).sum())
+        print(f"    {segment_value:<20}{threshold:>8.3f}   "
+              f"({count_in_segment:,} training customers)")
+
+    segment_predictions_test = cost_module.apply_segment_thresholds(
+        ensemble_test_5d, segment_test, segment_thresholds, blend_5d.threshold
+    )
+
     # ---------------------------------------------------------------- 5
     stage(5, "Scoring every system on the held-out test set")
     results = []
@@ -164,6 +186,12 @@ def run(quick=False, run_seed_check=False):
 
     score("SA 5-D + Bayesian Network",
           None, combined_test, threshold=blend_5d.threshold)
+
+    results.append(cost_module.evaluate_predictions(
+        f"SA 5-D + Segment Thresholds ({config.SEGMENT_COLUMN})",
+        data["y_test"], ensemble_test_5d, segment_predictions_test,
+        threshold_label=f"per-{config.SEGMENT_COLUMN.lower()}",
+    ))
 
     results_table = pd.DataFrame(results)
 
@@ -216,6 +244,7 @@ def run(quick=False, run_seed_check=False):
         "cv_fold_thresholds": search_cv["fold_thresholds"],
         "cv_threshold_spread": search_cv["threshold_spread"],
         "sa_acceptance_rate_5d": round(search_5d["acceptance_rate"], 4),
+        "segment_thresholds": {str(k): round(v, 4) for k, v in segment_thresholds.items()},
         "verdict": verdict,
         "robustness": seed_summary,
     }
@@ -240,16 +269,17 @@ def summarise(results_table, model_names):
     proposed = cost_of("SA Ensemble 5-D (proposed)")
     original = cost_of("SA Ensemble 4-D (original)")
     stacking = cost_of("LR Stacking (baseline)")
+    segmented = cost_of(f"SA 5-D + Segment Thresholds ({config.SEGMENT_COLUMN})")
 
     single_model_costs = {name: cost_of(name) for name in model_names}
     best_single_name   = min(single_model_costs, key=single_model_costs.get)
     best_single_cost   = single_model_costs[best_single_name]
 
-    def compare(label, other_cost):
-        difference = other_cost - proposed
+    def compare(label, other_cost, against_cost=proposed):
+        difference = other_cost - against_cost
         percent    = 100 * difference / other_cost if other_cost else 0.0
         verdict    = "better" if difference > 0 else "WORSE"
-        print(f"  vs {label:<34} {proposed:>6.0f} against {other_cost:>6.0f}   "
+        print(f"  vs {label:<34} {against_cost:>6.0f} against {other_cost:>6.0f}   "
               f"{difference:+6.0f}  ({percent:+.1f}%)  {verdict}")
         return {"baseline_cost": other_cost, "difference": difference,
                 "percent": percent}
@@ -259,6 +289,21 @@ def summarise(results_table, model_names):
     against_stacking = compare("LR Stacking (the named baseline)", stacking)
     against_original = compare("its own 4-D original design", original)
     against_single   = compare(f"{best_single_name} alone", best_single_cost)
+
+    print()
+    print(f"  Does giving the 5-D ensemble a separate threshold per "
+          f"{config.SEGMENT_COLUMN} help?")
+    print()
+    against_global_for_segment = compare(
+        "its own global-threshold version", proposed, against_cost=segmented)
+    against_single_for_segment = compare(
+        f"{best_single_name} alone", best_single_cost, against_cost=segmented)
+
+    if segmented < best_single_cost:
+        print()
+        print(f"  Segment thresholds bring the ensemble BELOW {best_single_name}")
+        print("  on this split. One split proves nothing on its own - confirm")
+        print("  with analyse_result.py --splits 5 before reporting it.")
 
     print()
     if against_single["difference"] <= 0:
@@ -278,9 +323,12 @@ def summarise(results_table, model_names):
 
     return {
         "proposed_cost": proposed,
+        "segmented_cost": segmented,
         "vs_stacking": against_stacking,
         "vs_original_4d": against_original,
         "vs_best_single": {**against_single, "model": best_single_name},
+        "segmented_vs_global": against_global_for_segment,
+        "segmented_vs_best_single": {**against_single_for_segment, "model": best_single_name},
     }
 
 

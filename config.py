@@ -135,8 +135,39 @@ MAX_THRESHOLD     = 0.95
 
 
 # ---------------------------------------------------------------------------
-# Bayesian Belief Network
+# Segment-specific thresholds
 # ---------------------------------------------------------------------------
+# Instead of one global cutoff for every customer, tune a separate cutoff per
+# value of this raw (unencoded) column. Contract type is the strongest single
+# churn signal in the dataset and splits customers into three groups with
+# very different baseline churn rates, which is why it was the first thing
+# tried here. Change this to experiment with other segment columns
+# (e.g. "InternetService", "PaymentMethod") without touching any other code.
+#
+# MEASURED RESULT with "Contract": this did NOT help, and made things
+# slightly worse. Across 5 train/test splits, segmenting the SA 5-D
+# ensemble's threshold by Contract cost +9.2 on average versus its own
+# global threshold, and did not close the gap to Logistic Regression either
+# (mean +14.0, 95% CI [-12.0, +40.0] - includes zero, so not even a
+# significant loss, just no measured benefit).
+#
+# The likely reason: Contract type is already one of the 30 features all
+# four base models see and weight heavily (it's the single strongest churn
+# signal). The ensemble's probability output already encodes "this customer
+# is month-to-month, therefore high risk" - so tuning a second, separate
+# threshold on the same variable doesn't add new information, it just
+# splits the training data into three smaller, noisier slices to tune
+# against. Same failure mode as the validation guard above: less data per
+# decision, no new signal, more noise.
+#
+# Kept in the code (not deleted) because it's a legitimate thing to have
+# tried, and a different segment column - one that carries information the
+# base models DON'T already use heavily - might behave differently. Contract
+# was simply the wrong candidate.
+
+SEGMENT_COLUMN = "Contract"
+
+
 # The BBN only gets consulted when the ensemble is genuinely unsure, i.e. when
 # its probability lands inside this band around the decision threshold.
 
