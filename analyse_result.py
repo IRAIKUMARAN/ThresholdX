@@ -267,6 +267,13 @@ def repeat_across_splits(split_count):
             data["y_test"], test_probabilities @ weights,
             search["best_blend"].threshold)
 
+        averaged = annealing.cross_validated_search(
+            oof, data["y_train"], search_threshold=True, verbose=False)
+        row["SA k-fold"] = cost_module.business_cost_of_probabilities(
+            data["y_test"],
+            test_probabilities @ averaged["best_blend"].weights,
+            averaged["best_blend"].threshold)
+
         all_rows.append(row)
         winner = min((k for k in row if k != "split"), key=lambda k: row[k])
         print(f"  split {split_number}/{split_count} (seed {seed:>4}) "
@@ -289,15 +296,42 @@ def repeat_across_splits(split_count):
     for name, count in win_counts.items():
         print(f"    {name:<24}{count:>3} of {len(table)}")
 
+    # ---- Is the difference real, or is it noise? -------------------------
+    # Averages alone cannot answer this. Both systems ran on the SAME splits,
+    # so we compare them split by split - a paired comparison.
     best_overall = means.index[0]
-    print()
-    if best_overall == "SA 5-D":
-        print("  The proposed system is best on average across splits.")
-    else:
-        print(f"  {best_overall} is cheapest on average across splits, not the")
-        print("  proposed system. This is not an artefact of one unlucky split.")
+    rival = "SA 5-D" if best_overall != "SA 5-D" else means.index[1]
 
-    return table
+    print()
+    print("-" * 74)
+    print(f"  Is the gap between {best_overall} and {rival} real?")
+    print("-" * 74)
+
+    comparison = cost_module.paired_comparison(
+        table[rival].values, table[best_overall].values)
+
+    print(f"  Difference on each split ({rival} minus {best_overall}):")
+    print("    " + ", ".join(f"{d:+.0f}" for d in comparison["differences"]))
+    print()
+    print(f"  Mean difference     : {comparison['mean_difference']:+.1f}")
+    print(f"  Standard deviation  : {comparison['sample_sd']:.1f}")
+    print(f"  95% confidence range: "
+          f"{comparison['confidence_interval'][0]:+.1f} to "
+          f"{comparison['confidence_interval'][1]:+.1f}")
+    print()
+
+    if comparison["significant"]:
+        print(f"  The interval excludes zero, so {best_overall} is genuinely")
+        print(f"  cheaper than {rival} on this evidence.")
+    else:
+        print(f"  The interval INCLUDES ZERO, so this evidence does not show a")
+        print(f"  real difference between {best_overall} and {rival}.")
+        print(f"  {best_overall} has the lower average, but the gap is within")
+        print(f"  the variation between splits. The honest statement is that")
+        print(f"  the two are indistinguishable here - not that one beats the")
+        print(f"  other. More splits would be needed to separate them.")
+
+    return table, comparison
 
 
 # ---------------------------------------------------------------------------

@@ -363,6 +363,65 @@ check("the held-back slice is about the configured size",
 
 
 # ---------------------------------------------------------------------------
+section("4d. Paired statistics - telling a real gap from noise")
+# ---------------------------------------------------------------------------
+
+# A large, consistent difference must register as significant.
+obvious = cost_module.paired_comparison([100, 102, 98, 101, 99],
+                                        [50, 52, 48, 51, 49])
+check("a large consistent difference is called significant",
+      obvious["significant"] and obvious["mean_difference"] > 0,
+      str(obvious["confidence_interval"]))
+
+# A small difference swamped by variation must NOT.
+noisy = cost_module.paired_comparison([100, 80, 120, 90, 110],
+                                      [98, 85, 115, 95, 105])
+check("a small difference inside the noise is NOT called significant",
+      not noisy["significant"],
+      f"CI {noisy['confidence_interval']}")
+
+# Identical systems must never look different.
+identical = cost_module.paired_comparison([1, 2, 3, 4], [1, 2, 3, 4])
+check("identical systems show no difference",
+      identical["mean_difference"] == 0 and not identical["significant"])
+
+# Sign convention: first argument minus second.
+signed = cost_module.paired_comparison([10, 10], [4, 4])
+check("the difference is first argument minus second",
+      signed["mean_difference"] == 6)
+
+# Reversing the arguments must flip the sign, not the conclusion.
+forward = cost_module.paired_comparison([100, 102, 98, 101, 99],
+                                        [50, 52, 48, 51, 49])
+backward = cost_module.paired_comparison([50, 52, 48, 51, 49],
+                                         [100, 102, 98, 101, 99])
+check("swapping the arguments flips the sign but not the verdict",
+      abs(forward["mean_difference"] + backward["mean_difference"]) < 1e-9
+      and forward["significant"] == backward["significant"])
+
+check("a single split cannot support a significance claim",
+      not cost_module.paired_comparison([5], [3])["significant"])
+
+# The real result from this project, checked explicitly so the report's
+# central claim is verified rather than asserted.
+project_result = cost_module.paired_comparison(
+    [613, 561, 614, 587, 591],    # SA 5-D across the five splits
+    [594, 564, 600, 578, 606])    # Logistic Regression across the same splits
+
+check("our own SA-vs-LR result is correctly judged NOT significant",
+      not project_result["significant"],
+      f"mean {project_result['mean_difference']:+.1f}, "
+      f"CI {project_result['confidence_interval'][0]:+.1f} to "
+      f"{project_result['confidence_interval'][1]:+.1f}")
+
+print(f"  INFO  SA 5-D minus Logistic Regression: "
+      f"{project_result['mean_difference']:+.1f} "
+      f"(95% CI {project_result['confidence_interval'][0]:+.1f} to "
+      f"{project_result['confidence_interval'][1]:+.1f}, "
+      f"t={project_result['t_statistic']:.2f})")
+
+
+# ---------------------------------------------------------------------------
 section("5. The Bayesian network - the two bugs that were found")
 # ---------------------------------------------------------------------------
 

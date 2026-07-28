@@ -190,6 +190,68 @@ def evaluate(system_name, true_labels, churn_probabilities, threshold):
 # Threshold tuning
 # ---------------------------------------------------------------------------
 
+# Two-tailed t critical values at 95% confidence, indexed by degrees of
+# freedom. Small tables like this avoid a scipy dependency and keep the
+# statistics visible rather than hidden inside a library call.
+T_CRITICAL_95 = {
+    1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
+    8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+    15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093, 20: 2.086,
+    25: 2.060, 30: 2.042,
+}
+
+
+def paired_comparison(costs_a, costs_b):
+    """
+    Compare two systems measured on the SAME set of splits.
+
+    Because both systems saw identical data on each split, the comparison is
+    paired: we look at the difference on each split rather than at the two
+    averages separately. That removes the variation caused by some splits
+    simply being harder than others, which is usually far larger than the
+    difference between the systems.
+
+    Returns the mean difference, a 95% confidence interval, and whether that
+    interval excludes zero. If it does not exclude zero, the two systems are
+    statistically indistinguishable on this evidence - regardless of which one
+    has the nicer-looking average.
+    """
+    differences = np.asarray(costs_a, dtype=float) - np.asarray(costs_b, dtype=float)
+    n = len(differences)
+
+    if n < 2:
+        return {"n": n, "mean_difference": float(differences.mean()),
+                "significant": False, "reason": "need at least two splits"}
+
+    mean_difference = float(differences.mean())
+    # Sample standard deviation, dividing by n-1 rather than n.
+    sample_sd = float(differences.std(ddof=1))
+    standard_error = sample_sd / np.sqrt(n)
+
+    degrees_of_freedom = n - 1
+    critical = T_CRITICAL_95.get(
+        degrees_of_freedom,
+        T_CRITICAL_95[min(T_CRITICAL_95, key=lambda k: abs(k - degrees_of_freedom))],
+    )
+
+    margin = critical * standard_error
+    interval = (mean_difference - margin, mean_difference + margin)
+
+    # Significant only when the whole interval sits on one side of zero.
+    significant = (interval[0] > 0) or (interval[1] < 0)
+
+    return {
+        "n": n,
+        "differences": differences.tolist(),
+        "mean_difference": mean_difference,
+        "sample_sd": sample_sd,
+        "standard_error": standard_error,
+        "t_statistic": mean_difference / standard_error if standard_error else 0.0,
+        "confidence_interval": interval,
+        "significant": significant,
+    }
+
+
 def find_best_threshold(true_labels, churn_probabilities):
     """
     Sweep every sensible cutoff and return the one with the lowest cost.

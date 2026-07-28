@@ -262,17 +262,19 @@ def summarise(results_table, model_names):
 
     print()
     if against_single["difference"] <= 0:
-        print("  HONEST READING: the proposed system does NOT beat the best single")
-        print("  classifier. The ensemble machinery is not earning its place, and")
-        print("  the report should say so rather than compare only against stacking.")
+        print(f"  HONEST READING: on this split the proposed system does NOT beat")
+        print(f"  {best_single_name} on its own. One split cannot settle that,")
+        print("  though - run  analyse_result.py --splits 5  which repeats the")
+        print("  comparison and applies a paired significance test.")
     elif against_single["percent"] < 2.0:
         print("  HONEST READING: the gain over the best single classifier is under")
         print("  2%, which is within the range that run-to-run randomness can")
-        print("  produce. Run with --seeds before claiming this as a result.")
+        print("  produce. Run  analyse_result.py --splits 5  before claiming it.")
     else:
         print(f"  The proposed system beats every alternative, including "
               f"{best_single_name}")
         print("  on its own - which is the comparison that actually matters.")
+        print("  Confirm with  analyse_result.py --splits 5  before reporting it.")
 
     return {
         "proposed_cost": proposed,
