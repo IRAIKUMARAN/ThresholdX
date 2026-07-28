@@ -198,6 +198,171 @@ check("the same seed reproduces the same answer",
 
 
 # ---------------------------------------------------------------------------
+section("4b. The guard against the search overfitting itself")
+# ---------------------------------------------------------------------------
+
+guarded = annealing.simulated_annealing(
+    probability_matrix, labels, max_iterations=1200,
+    use_validation=True, verbose=False)
+
+unguarded = annealing.simulated_annealing(
+    probability_matrix, labels, max_iterations=1200,
+    use_validation=False, verbose=False)
+
+check("the default matches what we measured (guard off)",
+      config.SA_USE_VALIDATION is False,
+      "the guard measured WORSE on unseen data, so it should not be default")
+
+check("the held-back slice is actually held back",
+      guarded["used_validation"] and not unguarded["used_validation"])
+
+# The solution we keep must be the one that won on the held-back slice - not
+# whichever scored best on the data the search was optimising.
+kept_validation_cost = cost_module.business_cost_of_probabilities(
+    labels, probability_matrix @ guarded["best_blend"].weights,
+    guarded["best_blend"].threshold)
+
+check("the kept solution is the one selected on held-back data",
+      guarded["best_validation_cost"] <= kept_validation_cost,
+      "the reported validation score does not correspond to the kept solution")
+
+check("with the guard off, search and selection use the same data",
+      unguarded["best_search_cost"] == unguarded["best_cost"],
+      f"search {unguarded['best_search_cost']:.0f} vs "
+      f"reported {unguarded['best_cost']:.0f}")
+
+# The real question: does the guard help on data NEITHER run has ever seen?
+# Averaged over several seeds, because a single run is noise.
+def generalisation_gap(use_guard):
+    """Mean cost on a genuinely unseen third set, across several seeds."""
+    costs = []
+    for seed in (0, 1, 2, 3, 4):
+        generator = np.random.default_rng(100 + seed)
+        holdout = generator.random(len(labels)) < 0.3     # unseen third set
+        fitting = ~holdout
+
+        result = annealing.simulated_annealing(
+            probability_matrix[fitting], labels[fitting],
+            max_iterations=600, random_seed=seed,
+            use_validation=use_guard, verbose=False)
+
+        blend = result["best_blend"]
+        costs.append(cost_module.business_cost_of_probabilities(
+            labels[holdout], probability_matrix[holdout] @ blend.weights,
+            blend.threshold) / holdout.sum())
+    return float(np.mean(costs))
+
+guarded_gap   = generalisation_gap(True)
+unguarded_gap = generalisation_gap(False)
+
+print(f"  INFO  unseen-data cost per customer: "
+      f"guarded {guarded_gap:.4f}, unguarded {unguarded_gap:.4f}")
+print(f"        the guard measured {'WORSE' if guarded_gap > unguarded_gap else 'better'}"
+      f" - which is why it is off by default")
+
+# Both settings must produce a usable solution. We deliberately do NOT assert
+# that one beats the other: that is an empirical question, it is answered by
+# Experiment 5 in analyse_result.py, and the answer depends on the dataset.
+check("both settings produce a working solution",
+      0 < guarded_gap < 5 and 0 < unguarded_gap < 5,
+      f"guarded {guarded_gap:.4f}, unguarded {unguarded_gap:.4f}")
+
+check("neither setting is catastrophically worse than the other",
+      abs(guarded_gap - unguarded_gap) / min(guarded_gap, unguarded_gap) < 0.25,
+      f"a gap this large suggests one path is broken rather than merely worse")
+
+
+# ---------------------------------------------------------------------------
+section("4c. K-fold averaging - the remedy that did work")
+# ---------------------------------------------------------------------------
+
+folds = annealing.stratified_folds(labels, 5, np.random.default_rng(0))
+
+check("k-fold produces the requested number of folds", len(folds) == 5)
+
+check("every customer lands in exactly one fold",
+      sorted(np.concatenate(folds).tolist()) == list(range(len(labels))))
+
+check("every fold carries about the same churn rate",
+      max(labels[f].mean() for f in folds) -
+      min(labels[f].mean() for f in folds) < 0.05,
+      str([round(float(labels[f].mean()), 3) for f in folds]))
+
+averaged = annealing.cross_validated_search(
+    probability_matrix, labels, max_iterations=600, verbose=False)
+
+check("averaged weights still sum to 1",
+      abs(averaged["best_blend"].weights.sum() - 1.0) < 1e-9)
+
+check("averaged weights are never negative",
+      np.all(averaged["best_blend"].weights >= 0))
+
+check("averaged threshold stays in range",
+      config.MIN_THRESHOLD <= averaged["best_blend"].threshold <= config.MAX_THRESHOLD)
+
+check("the search ran once per fold",
+      len(averaged["fold_weights"]) == averaged["fold_count"] == config.SA_CV_FOLDS)
+
+check("disagreement between folds is measured and reported",
+      averaged["threshold_spread"] >= 0 and averaged["weight_spread"] >= 0)
+
+# The claim being made in the report: averaging across folds generalises better
+# than a single run. Tested on data neither approach has seen.
+def unseen_cost(blend, probabilities, outcomes):
+    return cost_module.business_cost_of_probabilities(
+        outcomes, probabilities @ blend.weights, blend.threshold) / len(outcomes)
+
+
+single_costs, averaged_costs = [], []
+for trial in range(5):
+    generator = np.random.default_rng(500 + trial)
+    fit_rows = generator.random(len(labels)) < 0.6
+    unseen   = ~fit_rows
+
+    one = annealing.simulated_annealing(
+        probability_matrix[fit_rows], labels[fit_rows],
+        max_iterations=800, random_seed=trial, verbose=False)["best_blend"]
+    many = annealing.cross_validated_search(
+        probability_matrix[fit_rows], labels[fit_rows],
+        max_iterations=800, random_seed=trial, verbose=False)["best_blend"]
+
+    single_costs.append(unseen_cost(one, probability_matrix[unseen], labels[unseen]))
+    averaged_costs.append(unseen_cost(many, probability_matrix[unseen], labels[unseen]))
+
+single_mean   = float(np.mean(single_costs))
+averaged_mean = float(np.mean(averaged_costs))
+
+print(f"  INFO  unseen-data cost per customer: single run {single_mean:.4f}, "
+      f"k-fold averaged {averaged_mean:.4f}")
+
+check("k-fold averaging generalises at least as well as a single run",
+      averaged_mean <= single_mean * 1.01,
+      f"averaged {averaged_mean:.4f} vs single {single_mean:.4f}")
+
+# Stratification: both halves must carry the same churn rate, otherwise the
+# held-back slice is a harder or easier test rather than a fair one.
+generator = np.random.default_rng(0)
+search_rows, validation_rows = annealing.split_for_validation(
+    labels, generator, 0.25)
+
+check("the held-back slice keeps the same churn rate",
+      abs(labels[search_rows].mean() - labels[validation_rows].mean()) < 0.02,
+      f"search {labels[search_rows].mean():.3f} vs "
+      f"validation {labels[validation_rows].mean():.3f}")
+
+check("no customer is in both halves",
+      len(np.intersect1d(search_rows, validation_rows)) == 0)
+
+check("every customer is in exactly one half",
+      len(search_rows) + len(validation_rows) == len(labels))
+
+check("the held-back slice is about the configured size",
+      abs(len(validation_rows) / len(labels) - config.SA_VALIDATION_FRACTION) < 0.02,
+      f"got {len(validation_rows) / len(labels):.3f}, "
+      f"expected {config.SA_VALIDATION_FRACTION}")
+
+
+# ---------------------------------------------------------------------------
 section("5. The Bayesian network - the two bugs that were found")
 # ---------------------------------------------------------------------------
 

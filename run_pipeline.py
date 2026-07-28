@@ -85,17 +85,24 @@ def run(quick=False, run_seed_check=False):
         search_threshold=True, max_iterations=max_iterations,
     )
 
+    print("\n  (c) Same 5-D search, but run once per fold and averaged")
+    search_cv = annealing.cross_validated_search(
+        oof_probabilities, data["y_train"],
+        search_threshold=True, max_iterations=max_iterations,
+    )
+
     blend_4d = search_4d["best_blend"]
     blend_5d = search_5d["best_blend"]
+    blend_cv = search_cv["best_blend"]
 
     print("\n  Weights found:")
-    print(f"    {'Model':<22}{'4-D':>10}{'5-D':>10}")
-    print("    " + "-" * 42)
+    print(f"    {'Model':<22}{'4-D':>10}{'5-D':>10}{'5-D k-fold':>12}")
+    print("    " + "-" * 54)
     for index, name in enumerate(model_names):
         print(f"    {name:<22}{blend_4d.weights[index]:>10.3f}"
-              f"{blend_5d.weights[index]:>10.3f}")
+              f"{blend_5d.weights[index]:>10.3f}{blend_cv.weights[index]:>12.3f}")
     print(f"    {'decision threshold':<22}{blend_4d.threshold:>10.3f}"
-          f"{blend_5d.threshold:>10.3f}")
+          f"{blend_5d.threshold:>10.3f}{blend_cv.threshold:>12.3f}")
 
     # ---------------------------------------------------------------- 4
     stage(4, "Consulting the Bayesian network on uncertain customers")
@@ -151,6 +158,10 @@ def run(quick=False, run_seed_check=False):
     score("SA Ensemble 5-D (proposed)",
           None, ensemble_test_5d, threshold=blend_5d.threshold)
 
+    score("SA 5-D k-fold averaged",
+          None, blend_cv.predict_probabilities(test_probabilities),
+          threshold=blend_cv.threshold)
+
     score("SA 5-D + Bayesian Network",
           None, combined_test, threshold=blend_5d.threshold)
 
@@ -199,7 +210,11 @@ def run(quick=False, run_seed_check=False):
         "results": results_table.to_dict(orient="records"),
         "weights_4d": dict(zip(model_names, blend_4d.weights.round(4).tolist())),
         "weights_5d": dict(zip(model_names, blend_5d.weights.round(4).tolist())),
+        "weights_cv": dict(zip(model_names, blend_cv.weights.round(4).tolist())),
         "threshold_5d": round(blend_5d.threshold, 4),
+        "threshold_cv": round(blend_cv.threshold, 4),
+        "cv_fold_thresholds": search_cv["fold_thresholds"],
+        "cv_threshold_spread": search_cv["threshold_spread"],
         "sa_acceptance_rate_5d": round(search_5d["acceptance_rate"], 4),
         "verdict": verdict,
         "robustness": seed_summary,

@@ -74,6 +74,50 @@ SA_CALIBRATION_SAMPLES  = 200    # random probes used to measure the cost scale
 SA_WEIGHT_STEP_SIZE    = 0.08
 SA_THRESHOLD_STEP_SIZE = 0.03
 
+# ---------------------------------------------------------------------------
+# Guarding the search against overfitting
+# ---------------------------------------------------------------------------
+# The search tunes five numbers. Anything with five free parameters can find
+# patterns that exist only in the data it was tuned on and vanish on new
+# customers. That is overfitting, and a search is especially prone to it
+# because its whole job is to hunt for whatever scores best.
+#
+# The guard: hold back a slice of the training data that the search cannot see
+# while it explores. The search still EXPLORES using the larger portion, but
+# the solution we finally KEEP is whichever scored best on the held-back
+# slice. A solution that only works on the data it was fitted to will lose
+# here, so it never gets chosen.
+#
+# This is separate from, and additional to, the final test set - which stays
+# untouched until the very end regardless.
+
+# MEASURED RESULT: this guard is switched OFF by default, because we tested it
+# and it did not work.
+#
+# On a controlled benchmark it made performance on unseen data WORSE - 0.3124
+# against 0.3008 cost per customer. Two reasons, both real:
+#
+#   1. Selecting the best of ~5,000 candidate solutions against a held-back
+#      slice means you start fitting the slice itself. The guard against
+#      overfitting becomes a new way to overfit.
+#   2. Shrinking the explored data from 100% to 75% makes the objective
+#      noisier, so the search has a worse signal to follow.
+#
+# The mechanism is implemented, tested and available. Turn it on to reproduce
+# the comparison, and see Experiment 5 in analyse_result.py, which settles the
+# question on the real dataset rather than on a benchmark.
+
+SA_VALIDATION_FRACTION = 0.25    # share of training data held back for selection
+SA_USE_VALIDATION      = False   # measured as unhelpful - see note above
+
+# The k-fold alternative. Instead of holding back one slice, run the entire
+# search k times on k different slices and average the answers. Answers that
+# only work on one particular slice disagree with each other and average away.
+#
+# This attacks the same overfitting problem as the guard above, but without its
+# weakness - there is no single small slice to accidentally fit.
+SA_CV_FOLDS = 5
+
 
 # ---------------------------------------------------------------------------
 # Decision threshold

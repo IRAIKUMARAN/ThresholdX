@@ -302,6 +302,66 @@ def repeat_across_splits(split_count):
 
 # ---------------------------------------------------------------------------
 
+def test_the_overfitting_guard(oof_probabilities, y_train,
+                               test_probabilities, y_test):
+    """
+    Does holding back a validation slice actually reduce overfitting?
+
+    The search tunes five numbers, so it could in principle latch onto patterns
+    that exist only in the training data. The textbook remedy is to hold back
+    a slice the search cannot see and select the final solution on that.
+
+    We implemented that remedy and it made things WORSE on a controlled
+    benchmark, for two reasons worth understanding:
+
+      1. The search evaluates thousands of candidate solutions. Picking
+         whichever scores best on a held-back slice means fitting that slice.
+         The guard against overfitting becomes a fresh way to overfit.
+      2. Holding data back shrinks what the search explores, making its
+         objective noisier.
+
+    This experiment settles it on the real dataset instead of a benchmark. It
+    runs both settings across several seeds and compares TEST cost, which
+    neither setting has ever seen.
+    """
+    subheading("EXPERIMENT 5  -  does a validation guard reduce overfitting?")
+
+    results = {}
+
+    for use_guard in (False, True):
+        costs = []
+        for seed in config.ROBUSTNESS_SEEDS:
+            search = annealing.simulated_annealing(
+                oof_probabilities, y_train, search_threshold=True,
+                random_seed=seed, use_validation=use_guard, verbose=False)
+            blend = search["best_blend"]
+            costs.append(cost_module.business_cost_of_probabilities(
+                y_test, test_probabilities @ blend.weights, blend.threshold))
+
+        results["guard on" if use_guard else "guard off"] = np.array(costs)
+
+    print(f"  {'Setting':<12}{'mean':>9}{'std':>8}{'min':>7}{'max':>7}")
+    print("  " + "-" * 44)
+    for label, costs in results.items():
+        print(f"  {label:<12}{costs.mean():>9.1f}{costs.std():>8.1f}"
+              f"{costs.min():>7.0f}{costs.max():>7.0f}")
+
+    off = results["guard off"].mean()
+    on  = results["guard on"].mean()
+
+    print()
+    if on < off:
+        print(f"  The guard helps on this dataset: {on:.1f} against {off:.1f}.")
+        print("  Consider setting SA_USE_VALIDATION = True in config.py.")
+    else:
+        print(f"  The guard does NOT help here: {on:.1f} against {off:.1f}.")
+        print("  This matches the benchmark result, and is why it ships off.")
+        print("  The search is not overfitting badly enough for the remedy to")
+        print("  be worth the data it costs.")
+
+    return results
+
+
 def main(split_count):
     heading("Why does the proposed system lose? - diagnostic analysis")
 
@@ -330,6 +390,9 @@ def main(split_count):
     measure_overfitting(oof_probabilities, data["y_train"],
                         test_probabilities, data["y_test"],
                         sa_weights, model_names)
+
+    test_the_overfitting_guard(oof_probabilities, data["y_train"],
+                               test_probabilities, data["y_test"])
 
     if split_count:
         repeat_across_splits(split_count)
