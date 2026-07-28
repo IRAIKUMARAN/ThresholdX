@@ -1,0 +1,17 @@
+# ThresholdX - ECE 569A
+# Install with:  pip install -r requirements.txt
+
+numpy>=1.23
+pandas>=1.5
+scikit-learn>=1.2
+matplotlib>=3.6
+
+# Note: pgmpy is deliberately NOT required.
+#
+# The original code used pgmpy for the Bayesian network, but its decisive
+# probability tables were hand-typed rather than learned, so the library was
+# doing inference over constants. The network is now built by counting the
+# training data directly in src/bayes_net.py - roughly 60 lines of pandas.
+#
+# That removes a heavy dependency, makes every probability inspectable, and
+# means the network can be explained line by line in the report.
